@@ -1,0 +1,37 @@
+name: Build firmware
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: thumbv7em-none-eabihf
+
+      - name: Cache cargo & build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install build tools
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-make,cargo-binutils,cargo-hex-to-uf2,flip-link
+
+      - name: Build UF2 (both halves)
+        run: cargo make uf2 --release
+
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: keypoint-firmware
+          path: |
+            rmk-central.uf2
+            rmk-peripheral.uf2
+          if-no-files-found: error
