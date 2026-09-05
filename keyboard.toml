@@ -1,0 +1,88 @@
+# Event-channel quotas only. Matrix, pins and keymap all live in Rust
+# (central.rs rmk.config()); this file does not touch them.
+# rmk-types/build.rs reads this file only when KEYBOARD_TOML_PATH is set -
+# injected via [env] in .cargo/config.toml; the file alone does nothing.
+#
+# Why: [event.*] subs/pubs cap the concurrent subscribers/publishers. RMK
+# reserves slots for its internal subscribers by feature (see rmk-config
+# subscriber_default.toml), but that reservation knows nothing about this
+# project's own @Processors (scroll/speed controllers on keyboard, pad/tp
+# processors and auto_mouse on pointing). Defaults leave zero headroom.
+# Channels are broadcast with a ring per subscriber; over quota, a subscriber
+# silently misses events (flaky keys, floaty mouse) or the generated code
+# hard-panics - and one panic resets the whole board (single executor).
+#
+# Values here are absolute; build.rs still adds feature reservations on top,
+# so erring wide is safe. Cost is static RAM: extra slots total ~4 KB, and
+# both halves have >100 KB free.
+
+# Compile-time capacity. Root cause of a past silent failure: without a
+# [behavior]/[rmk] section, auto_calculate_parameters() inserts
+# AUTO_MOUSE_LAYER_MAX_NUM = 0, so BehaviorConfig.auto_mouse_layer becomes a
+# zero-capacity heapless::Vec - push(..).ok() swallows "full" as success and
+# the runner pend()s forever with empty entries: no panic, no error, the
+# layer just never changes. 3 (not 2) leaves room for a third entry.
+[rmk]
+auto_mouse_layer_max_num = 3
+
+# Key events: matrix keyloop, split relay, vial, wpm/scroll/speed
+# processors, DisplayProcessor, BLE wake - needs the most headroom.
+[event.keyboard]
+subs = 8
+pubs = 5
+
+# Pointing: pad_processor, tp_processor, auto_mouse, split relay, BLE wake.
+[event.pointing]
+subs = 4
+pubs = 4
+
+# Modifiers: vial + DisplayProcessor.
+[event.modifier]
+subs = 3
+
+# Layer changes: DisplayProcessor + PeripheralBatteryMonitor + the split
+# PeripheralManager relay (created only after the right half connects - with
+# the old value 2, the 3rd subscriber() expect-panicked the moment the right
+# half linked; subs overflow is a hard panic, see rmk-macro event.rs).
+[event.layer_change]
+subs = 3
+
+# ClearPeer: PeripheralManager::run subscribes under #[cfg(_ble)] (5 s hold
+# on a profile key clears the peer). Default 0 - panics on the right half's
+# first connect. Same hidden-path trap as layer_change.
+[event.clear_peer]
+subs = 1
+
+# WPM: DisplayProcessor + each connected peripheral.
+[event.wpm_update]
+subs = 3
+
+# Sleep state: DisplayProcessor + each split link + sleep_watch (poll
+# slowdown).
+[event.sleep_state]
+subs = 4
+
+# LED indicator: DisplayProcessor + each peripheral.
+[event.led_indicator]
+subs = 4
+
+# Battery: BLE battery service + DisplayProcessor + split.
+[event.battery_status]
+subs = 3
+
+# Connection status: DisplayProcessor (with _ble) + each split link +
+# usb_diag tape + link_state LED.
+[event.connection_status_change]
+subs = 4
+
+# Right-half LED: rmk's DisplayProcessor subscribes for the panel (slot 1),
+# central_link_task is slot 2. At the default capacity 1 the second
+# subscriber() panics outright.
+[event.central_connected]
+subs = 2
+
+# Action events: auto_mouse subscribes only when deactivate_on_key /
+# reset_timeout_on_key are configured (assert requires SUB_SIZE != 0). Not
+# configured now; 1 slot so adding those lines later cannot explode.
+[event.action]
+subs = 1

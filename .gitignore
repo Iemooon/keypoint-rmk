@@ -1,0 +1,8 @@
+# Build artifacts
+/target
+*.hex
+*.uf2
+*.log
+
+# Local scratch
+/_quarantine_*/

@@ -1,0 +1,264 @@
+//! Status screen renderers for the two LPM009M360A panels (72x144 portrait).
+//!
+//! Every coordinate below is tuned and verified on the real panel - final.
+//! Do not rescale or re-derive them from datasheet or physical-glass
+//! dimensions.
+//!
+//! ```text
+//! ┌──────────────┐
+//! │ ᛒ1   ▓▓▓ 68  │ y2  mode badge left (BT rune+slot, or USB plug)
+//! │              │     battery bar hugging the right-aligned number
+//! │   (capybara  │ y11 animation, 70x120 centred, 600 s per frame
+//! │    frames)   │
+//! │    RAISE     │ y134 layer name, 9x18, bottom-flush
+//! └──────────────┘
+//! ```
+//!
+//! * Mode badge (top-left): wired -> sm4tik `usb_02` plug at 2x; wireless ->
+//!   Bluetooth rune (bitmap copied from rmk's crate-private icon set) plus
+//!   the 0-based profile digit (`ᛒ0`..`ᛒ2`); advertising shows `ᛒ-`; radio
+//!   idle shows nothing. The right half mirrors the central's status over
+//!   the split link via usb_diag.
+//! * Battery (top-right): bar plus bare number, right-aligned on x70; the
+//!   bar hugs the number with a 1px gap so they slide together.
+//! * Layer (bottom, centred): names from `LAYER_NAMES` below.
+//!
+//! Forensic pad/nub counters (tp_diag / trackpad getters) stay compiled as
+//! the fault tripwire; nothing renders them.
+
+use core::fmt::Write as _;
+use core::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+
+use embassy_time::{Duration, Instant};
+
+use embedded_graphics::mono_font::ascii::{FONT_6X13, FONT_9X18};
+use embedded_graphics::mono_font::MonoTextStyle;
+use embedded_graphics::pixelcolor::BinaryColor;
+use embedded_graphics::prelude::*;
+use embedded_graphics::primitives::{PrimitiveStyle, Rectangle};
+use embedded_graphics::text::Text;
+use heapless::String;
+use rmk::display::{DisplayRenderer, RenderContext};
+use rmk::types::battery::BatteryStatus;
+use rmk::types::ble::BleState;
+
+const HEAD: MonoTextStyle<'static, BinaryColor> =
+    MonoTextStyle::new(&FONT_6X13, BinaryColor::On);
+const BIG: MonoTextStyle<'static, BinaryColor> =
+    MonoTextStyle::new(&FONT_9X18, BinaryColor::On);
+const FILL_ON: PrimitiveStyle<BinaryColor> = PrimitiveStyle::with_fill(BinaryColor::On);
+const FILL_OFF: PrimitiveStyle<BinaryColor> = PrimitiveStyle::with_fill(BinaryColor::Off);
+
+/// Screen names for layers 0..4 - THE place to rename layers for the panel.
+pub const LAYER_NAMES: [&str; 5] = ["BASE", "RAISE", "LOWER", "FUNC", "MOUSE"];
+
+// --- capybara animation (ZMK peripheral_status.c algorithm, ported) ------
+//
+// Nine 72x120 portrait frames (tools/gen_capy.ps1 from the ZMK bitmaps),
+// centred on the panel: one frame every 600 s, cycling forward. The boot
+// frame is picked from the device fingerprint (FNV over the nRF52840
+// DEVICEID words plus a per-half salt), so the two halves animate out of
+// step like ZMK's left/right variants. Idle panels only advance when a
+// render happens; capy_tick.rs wakes the processor with a harmless WPM
+// event every 600 s.
+
+const CAPY_INTERVAL: Duration = Duration::from_secs(600);
+/// 0xFF = not yet seeded.
+static CAPY_FRAME: AtomicU8 = AtomicU8::new(0xFF);
+static CAPY_SINCE: AtomicU32 = AtomicU32::new(0); // ms of last switch, wrapping
+
+fn capy_frame(salt: u32) -> usize {
+    let now_ms = Instant::now().as_millis() as u32;
+    let f = CAPY_FRAME.load(Ordering::Relaxed);
+    if f == 0xFF {
+        // FNV-1a over DEVICEID[0..1] (FICR @ 0x1000_0060, unique per chip),
+        // then the half's salt. NB: 0x1000_0100 is INFO.PART/VARIANT/... -
+        // model-common values, NOT a fingerprint (was the original bug).
+        let mut h: u32 = 2166136261;
+        for i in 0..2u32 {
+            let w = unsafe { core::ptr::read_volatile((0x1000_0060 + i * 4) as *const u32) };
+            h = (h ^ (w & 0xFF)) .wrapping_mul(16777619);
+            h = (h ^ (w >> 8 & 0xFF)).wrapping_mul(16777619);
+            h = (h ^ (w >> 16 & 0xFF)).wrapping_mul(16777619);
+            h = (h ^ (w >> 24)).wrapping_mul(16777619);
+        }
+        let idx = (h ^ salt).wrapping_mul(16777619) % 9;
+        CAPY_FRAME.store(idx as u8, Ordering::Relaxed);
+        CAPY_SINCE.store(now_ms, Ordering::Relaxed);
+        idx as usize
+    } else if now_ms.wrapping_sub(CAPY_SINCE.load(Ordering::Relaxed))
+        >= CAPY_INTERVAL.as_millis() as u32
+    {
+        let nf = ((f as usize + 1) % 9) as u8;
+        CAPY_FRAME.store(nf, Ordering::Relaxed);
+        CAPY_SINCE.store(now_ms, Ordering::Relaxed);
+        nf as usize
+    } else {
+        f as usize
+    }
+}
+
+fn draw_capy<D: DrawTarget<Color = BinaryColor>>(d: &mut D, salt: u32) {
+    // 70px wide (white edges trimmed by the generator), centred on the
+    // 144-line canvas, 1px above exact centre (tuned).
+    blit(d, &crate::capy_art::CAPY_FRAMES[capy_frame(salt)], crate::capy_art::CAPY_W as i32, crate::capy_art::CAPY_H as i32, 9, 1, 1, 11);
+}
+
+/// Bluetooth rune, 9x14, MSB-first, 2 bytes per row. Same bitmap rmk ships
+/// in its private icon set (`display/renderers/icons.rs` is `pub(crate)`,
+/// so the bytes are replicated here rather than patched upstream).
+const BT_ICON: [u8; 28] = [
+    0x3E, 0x00, 0x67, 0x00, 0xE3, 0x80, 0xE9, 0x80, 0x8C, 0x80, 0xC9, 0x80, 0xE3, 0x80, 0xE3, 0x80,
+    0xC9, 0x80, 0x8C, 0x80, 0xE9, 0x80, 0xE3, 0x80, 0x67, 0x00, 0x3E, 0x00,
+];
+/// USB badge: `usb_02.xbm` from pablopalacios/sm4tik-xbm-icons (MIT) — the
+/// classic USB-A plug silhouette, 8x8 pixel-native, blitted at 2x (16x16).
+/// Shifted 2 columns left so the artwork's own left edge sits on x0.
+const USB_ICON: [u8; 8] = [0x20, 0x28, 0xA8, 0xA8, 0xB0, 0x60, 0x20, 0x20];
+const BT_W: i32 = 9;
+const BT_H: i32 = 14;
+const USB_W: i32 = 8;
+const USB_H: i32 = 8;
+const USB_SCALE: i32 = 2;
+
+// Absolute corner plan for the 72x144 portrait canvas. All values tuned on
+// the real panel; do not re-derive.
+const TOP_Y: i32 = 8; //  battery bar & digits anchor here
+/// Mode-badge icons & battery ride 6px above the anchor.
+const ICON_Y: i32 = TOP_Y - 6;
+/// Digits sit 4px below the anchor: the 6x13 cell keeps dead space above
+/// its glyphs, so this matches the optical centres of the 14px rune and
+/// the 16px USB badge (icon ~y8..23, glyph ~y12..22).
+const NUM_Y: i32 = TOP_Y + 4;
+const NUM_RIGHT_EDGE: i32 = 70; // battery number right-align edge (2px margin)
+const LAYER_Y: i32 = 134; // bottom-flush on the 144-line canvas; the 9x18
+                          // cell's dead rows absorb the overrun
+
+/// Panel on the left half (the split central). Each bin only constructs its
+/// own, hence the allow.
+#[allow(dead_code)]
+pub struct LeftScreen;
+
+/// Panel on the right half (the split peripheral).
+#[allow(dead_code)]
+pub struct RightScreen;
+
+fn txt<D: DrawTarget<Color = BinaryColor>>(d: &mut D, s: &str, x: i32, y: i32, style: MonoTextStyle<'static, BinaryColor>) {
+    Text::new(s, Point::new(x, y), style).draw(d).ok();
+}
+
+/// 1-bit bitmap blit, MSB-first, `stride` bytes per row, integer `scale`.
+#[allow(clippy::too_many_arguments)]
+fn blit<D: DrawTarget<Color = BinaryColor>>(d: &mut D, bits: &[u8], w: i32, h: i32, stride: usize, scale: i32, x0: i32, y0: i32) {
+    for row in 0..h {
+        let b = &bits[(row as usize) * stride..(row as usize) * stride + stride];
+        for col in 0..w {
+            if b[col as usize / 8] & (0x80 >> (col as usize % 8)) != 0 {
+                Rectangle::new(Point::new(x0 + col * scale, y0 + row * scale), Size::new(scale as u32, scale as u32))
+                    .into_styled(FILL_ON)
+                    .draw(d)
+                    .ok();
+            }
+        }
+    }
+}
+
+fn render_ui<D: DrawTarget<Color = BinaryColor>>(
+    d: &mut D,
+    ctx: &RenderContext,
+    usb_on: bool,
+    salt: u32,
+) {
+    d.clear(BinaryColor::Off).ok();
+    draw_capy(d, salt); // centre band y20..140; status row & layer name
+                        // overdraw it afterwards
+
+    // --- top-left: mode badge ---
+    if usb_on {
+        blit(d, &USB_ICON, USB_W, USB_H, 1, USB_SCALE, 2, ICON_Y);
+    } else {
+        // The rune goes dark entirely only when the radio is inactive;
+        // advertising keeps it with a dash where the slot digit belongs.
+        if !matches!(ctx.ble_status.state, BleState::Inactive) {
+            blit(d, &BT_ICON, BT_W, BT_H, 2, 1, 2, ICON_Y);
+            let mut s: String<4> = String::new();
+            match ctx.ble_status.state {
+                BleState::Advertising => {
+                    s.push('-').ok();
+                }
+                _ => {
+                    write!(s, "{}", ctx.ble_status.profile).ok();
+                }
+            }
+            txt(d, &s, BT_W + 4, NUM_Y, HEAD); // icon x2..10, 2px gap
+        }
+    }
+
+    // --- top-right: battery bar + number, chained right-aligned columns ---
+    let level = match ctx.battery.0 {
+        BatteryStatus::Available { level, .. } => level,
+        _ => None,
+    };
+    let mut s: String<4> = String::new();
+    match level {
+        Some(l) => write!(s, "{}", l).ok(),
+        None => s.push_str("--").ok(),
+    };
+    // Number rides the right edge (2px canvas margin); the bar hugs its
+    // left so both slide together as the digit count changes.
+    let digits = s.chars().count() as i32;
+    let num_x = NUM_RIGHT_EDGE - digits * 6;
+    let bar_x = num_x - 3 - 22; // cap ends 1px clear of the digits
+    Rectangle::new(Point::new(bar_x, ICON_Y + 1), Size::new(22, 11))
+        .into_styled(FILL_ON)
+        .draw(d)
+        .ok();
+    Rectangle::new(Point::new(bar_x + 1, ICON_Y + 2), Size::new(20, 9))
+        .into_styled(FILL_OFF)
+        .draw(d)
+        .ok();
+    if let Some(l) = level {
+        let w = (l as u32 * 18 / 100).clamp(1, 18);
+        Rectangle::new(Point::new(bar_x + 2, ICON_Y + 3), Size::new(w, 7))
+            .into_styled(FILL_ON)
+            .draw(d)
+            .ok();
+    }
+    Rectangle::new(Point::new(bar_x + 22, ICON_Y + 4), Size::new(2, 5))
+        .into_styled(FILL_ON)
+        .draw(d)
+        .ok();
+    txt(d, &s, num_x, NUM_Y, HEAD);
+
+    // --- bottom row, centred: layer name, largest glyphs on the panel ---
+    let label = LAYER_NAMES
+        .get(ctx.layer as usize)
+        .copied()
+        .unwrap_or("?");
+    let w = label.chars().count() as i32 * 9;
+    txt(d, label, (72 - w) / 2, LAYER_Y, BIG);
+}
+
+impl DisplayRenderer<BinaryColor> for LeftScreen {
+    fn render<D: DrawTarget<Color = BinaryColor>>(
+        &mut self,
+        ctx: &RenderContext,
+        d: &mut D,
+    ) {
+        let usb_on = crate::usb_diag::usb_connected();
+        // ZMK's left/right salts (right = the _DG variant's).
+        render_ui(d, ctx, usb_on, 0x85eb_ca6b);
+    }
+}
+
+impl DisplayRenderer<BinaryColor> for RightScreen {
+    fn render<D: DrawTarget<Color = BinaryColor>>(
+        &mut self,
+        ctx: &RenderContext,
+        d: &mut D,
+    ) {
+        // Wired badge comes from the central's mirrored ConnectionStatus,
+        // tracked by our usb_diag task (see peripheral.rs).
+        render_ui(d, ctx, crate::usb_diag::usb_connected(), 0x9e37_79b9);
+    }
+}
