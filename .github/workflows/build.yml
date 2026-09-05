@@ -12,6 +12,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install ARM GCC toolchain (for p256-cortex-m4-sys C sources)
+        run: sudo apt-get update && sudo apt-get install -y gcc-arm-none-eabi
+
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: thumbv7em-none-eabihf
