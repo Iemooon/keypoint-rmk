@@ -183,8 +183,10 @@ pub struct UiSnap {
 static SHOWN_LEVEL: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0xFF);
 static PREV_RAW: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0xFF);
 static TREND: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
-static LAST_UPD_MS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-const BATTERY_DISPLAY_GAP_MS: u64 = 120_000;
+/// u32 ms: thumbv7em has no AtomicU64; wraps at 49.7 days, and a wrap only
+/// costs one rate-limited refresh, not correctness.
+static LAST_UPD_MS: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
+const BATTERY_DISPLAY_GAP_MS: u32 = 120_000;
 
 fn shown_battery(raw: Option<u8>) -> Option<u8> {
     use core::sync::atomic::Ordering::Relaxed;
@@ -193,7 +195,7 @@ fn shown_battery(raw: Option<u8>) -> Option<u8> {
     if shown == 0xFF {
         SHOWN_LEVEL.store(r, Relaxed);
         PREV_RAW.store(r, Relaxed);
-        LAST_UPD_MS.store(embassy_time::Instant::now().as_millis() as u64, Relaxed);
+        LAST_UPD_MS.store(embassy_time::Instant::now().as_millis() as u32, Relaxed);
         return Some(r);
     }
     let prev = PREV_RAW.load(Relaxed);
@@ -219,8 +221,8 @@ fn shown_battery(raw: Option<u8>) -> Option<u8> {
         return Some(shown);
     }
     if delta < 5 {
-        let now = embassy_time::Instant::now().as_millis() as u64;
-        if now - LAST_UPD_MS.load(Relaxed) < BATTERY_DISPLAY_GAP_MS {
+        let now = embassy_time::Instant::now().as_millis() as u32;
+        if now.wrapping_sub(LAST_UPD_MS.load(Relaxed)) < BATTERY_DISPLAY_GAP_MS {
             return Some(shown); // rate-limited: repaint soon, not now
         }
         LAST_UPD_MS.store(now, Relaxed);
