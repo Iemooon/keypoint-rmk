@@ -211,19 +211,23 @@ async fn main(spawner: Spawner) {
     let mut keymap_data = KeymapData::new_with_encoder(keymap::get_default_keymap(), keymap::get_default_encoder_map());
     let mut behavior_config = BehaviorConfig::default();
     behavior_config.morse.enable_flow_tap = true;
-    // Tapping term (rmk: morse hold_timeout). 75 ms keeps tap-hold snappy
-    // without misfires (rmk default 250, ZMK Keypoint uses 99 for &lt/&mt).
-    // MorseProfile is a packed bitfield, hence the builder. Caveat: Vial's
-    // Tapping Term writes only reach memory (no flash save), so this
-    // constant is the real per-boot default.
-    // mode is pinned explicitly: None falls back to MorseMode::Normal
-    // (keyboard.rs tap_hold_mode), which reproduces ZMK's hold-preferred
-    // core - hold when the key is still down at timeout, tap on early
-    // release, no reaction to other-key presses (flow_tap below covers
-    // typing rolls). Pinning guards against a fallback change upstream.
+    // Tapping term (rmk: morse hold_timeout). 75 ms (rmk default 250, ZMK
+    // Keypoint uses 99 for &lt/&mt). MorseProfile is a packed bitfield, hence
+    // the builder. Caveat: Vial's Tapping Term writes only reach memory (no
+    // flash save), so this constant is the real per-boot default.
+    //
+    // mode = HoldOnOtherPress: while a tap-hold (thumb lt! Space) is held,
+    // the first press of any other key resolves it as HOLD immediately - the
+    // layer takes effect without waiting out the 75 ms term (rmk
+    // keyboard.rs:761). The previous bad experience with this mode predates
+    // flow_tap: with flow_tap on (120 ms prior-idle window) a Space pressed
+    // in a typing streak is resolved as TAP at press time, so HoOKP cannot
+    // misfire there. Residual semantic: Space pressed after a real pause and
+    // then interrupted by another key's press counts as intentional hold
+    // (= ZMK "hold-after-press"). Rollback = drop the with_mode line.
     behavior_config.morse.default_profile = behavior_config.morse.default_profile
         .with_hold_timeout_ms(Some(75))
-        .with_mode(Some(rmk::types::morse::MorseMode::Normal));
+        .with_mode(Some(rmk::types::morse::MorseMode::HoldOnOtherPress));
     // Consecutive-tap window: rmk default.
 
     // Auto mouse layer: pointer motion drops into layer 4 (keymap.rs "MOTION"),
