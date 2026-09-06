@@ -212,11 +212,18 @@ async fn main(spawner: Spawner) {
     let mut behavior_config = BehaviorConfig::default();
     behavior_config.morse.enable_flow_tap = true;
     // Tapping term (rmk: morse hold_timeout). 75 ms keeps tap-hold snappy
-    // without misfires (rmk default 250, ZMK 200). MorseProfile is a packed
-    // bitfield, hence the builder. Caveat: Vial's Tapping Term writes only
-    // reach memory (no flash save), so they last until reboot - this
+    // without misfires (rmk default 250, ZMK Keypoint uses 99 for &lt/&mt).
+    // MorseProfile is a packed bitfield, hence the builder. Caveat: Vial's
+    // Tapping Term writes only reach memory (no flash save), so this
     // constant is the real per-boot default.
-    behavior_config.morse.default_profile = behavior_config.morse.default_profile.with_hold_timeout_ms(Some(75));
+    // mode is pinned explicitly: None falls back to MorseMode::Normal
+    // (keyboard.rs tap_hold_mode), which reproduces ZMK's hold-preferred
+    // core - hold when the key is still down at timeout, tap on early
+    // release, no reaction to other-key presses (flow_tap below covers
+    // typing rolls). Pinning guards against a fallback change upstream.
+    behavior_config.morse.default_profile = behavior_config.morse.default_profile
+        .with_hold_timeout_ms(Some(75))
+        .with_mode(Some(rmk::types::morse::MorseMode::Normal));
     // Consecutive-tap window: rmk default.
 
     // Auto mouse layer: pointer motion drops into layer 4 (keymap.rs "MOTION"),
