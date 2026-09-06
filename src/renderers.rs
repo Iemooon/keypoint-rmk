@@ -167,6 +167,48 @@ pub struct UiSnap {
     layer: u8,
 }
 
+/// Battery display filter. rmk samples one-shot SAADC readings with no
+/// smoothing (hardware oversample cannot work in one-shot mode) and
+/// publishes on every 1% change, so raw percentages wobble +-1..2 digits -
+/// worst on the right half, where 12 s samples randomly collide with BLE
+/// bursts. Display rule: move when |new - shown| >= 2, or after TWO
+/// consecutive raw samples move the same direction (real charge/discharge
+/// keeps tracking; key-event renders re-read the same raw and do not touch
+/// the state machine).
+static SHOWN_LEVEL: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0xFF);
+static PREV_RAW: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0xFF);
+static TREND: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+fn shown_battery(raw: Option<u8>) -> Option<u8> {
+    use core::sync::atomic::Ordering::Relaxed;
+    let Some(r) = raw else { return None };
+    let shown = SHOWN_LEVEL.load(Relaxed);
+    if shown == 0xFF {
+        SHOWN_LEVEL.store(r, Relaxed);
+        PREV_RAW.store(r, Relaxed);
+        return Some(r);
+    }
+    let prev = PREV_RAW.load(Relaxed);
+    if r == prev {
+        return Some(shown); // same sample re-read: no new information
+    }
+    PREV_RAW.store(r, Relaxed);
+    if (r as i16 - shown as i16).abs() >= 2 {
+        SHOWN_LEVEL.store(r, Relaxed);
+        TREND.store(0, Relaxed);
+        return Some(r);
+    }
+    // 1-digit move: accept on the second consecutive same-direction sample.
+    let dir: u8 = if r > prev { 1 } else { 2 };
+    if TREND.load(Relaxed) == dir {
+        SHOWN_LEVEL.store(r, Relaxed);
+        TREND.store(0, Relaxed);
+        return Some(r);
+    }
+    TREND.store(dir, Relaxed);
+    Some(shown)
+}
+
 fn make_snap(ctx: &RenderContext, usb_on: bool, salt: u32) -> UiSnap {
     UiSnap {
         frame: capy_frame(salt),
@@ -177,10 +219,10 @@ fn make_snap(ctx: &RenderContext, usb_on: bool, salt: u32) -> UiSnap {
             BleState::Connected => 2,
         },
         profile: ctx.ble_status.profile,
-        level: match ctx.battery.0 {
+        level: shown_battery(match ctx.battery.0 {
             BatteryStatus::Available { level, .. } => level,
             _ => None,
-        },
+        }),
         layer: ctx.layer as u8,
     }
 }
@@ -237,10 +279,12 @@ fn render_ui<D: DrawTarget<Color = BinaryColor>>(
     }
 
     // --- top-right: battery bar + number, chained right-aligned columns ---
-    let level = match ctx.battery.0 {
+    // Displayed value passes the anti-wobble filter (shown_battery); the
+    // snap made the same call with the same sample, so both agree.
+    let level = shown_battery(match ctx.battery.0 {
         BatteryStatus::Available { level, .. } => level,
         _ => None,
-    };
+    });
     let mut s: String<4> = String::new();
     match level {
         Some(l) => write!(s, "{}", l).ok(),
