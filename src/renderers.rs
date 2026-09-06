@@ -170,14 +170,21 @@ pub struct UiSnap {
 /// Battery display filter. rmk samples one-shot SAADC readings with no
 /// smoothing (hardware oversample cannot work in one-shot mode) and
 /// publishes on every 1% change, so raw percentages wobble +-1..2 digits -
-/// worst on the right half, where 12 s samples randomly collide with BLE
-/// bursts. Display rule: move when |new - shown| >= 2, or after TWO
-/// consecutive raw samples move the same direction (real charge/discharge
-/// keeps tracking; key-event renders re-read the same raw and do not touch
-/// the state machine).
+/// worst on the right half, where 30 s samples randomly collide with BLE
+/// bursts. Display rules, in order:
+///   * >=5% jump: immediate (big state change, e.g. charger plug event);
+///   * >=2% or two consecutive same-direction 1% samples: eligible - but
+///     still rate-limited to one update per BATTERY_DISPLAY_GAP;
+///   * key-event renders re-read the same raw and never touch the machine.
+/// The gap exists because during charging the voltage climbs steadily and
+/// the pure-value rules alone would repaint every minute - Lemon asked for
+/// calmer battery behavior, and the number has no business moving that
+/// often. (Hardware sample rate itself is rmk's fixed 30 s default.)
 static SHOWN_LEVEL: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0xFF);
 static PREV_RAW: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0xFF);
 static TREND: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+static LAST_UPD_MS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+const BATTERY_DISPLAY_GAP_MS: u64 = 120_000;
 
 fn shown_battery(raw: Option<u8>) -> Option<u8> {
     use core::sync::atomic::Ordering::Relaxed;
@@ -186,6 +193,7 @@ fn shown_battery(raw: Option<u8>) -> Option<u8> {
     if shown == 0xFF {
         SHOWN_LEVEL.store(r, Relaxed);
         PREV_RAW.store(r, Relaxed);
+        LAST_UPD_MS.store(embassy_time::Instant::now().as_millis() as u64, Relaxed);
         return Some(r);
     }
     let prev = PREV_RAW.load(Relaxed);
@@ -193,20 +201,32 @@ fn shown_battery(raw: Option<u8>) -> Option<u8> {
         return Some(shown); // same sample re-read: no new information
     }
     PREV_RAW.store(r, Relaxed);
-    if (r as i16 - shown as i16).abs() >= 2 {
-        SHOWN_LEVEL.store(r, Relaxed);
-        TREND.store(0, Relaxed);
-        return Some(r);
+    let delta = (r as i16 - shown as i16).abs();
+    let trend_ok = if delta >= 2 {
+        true
+    } else {
+        // 1-digit move: accept on the second consecutive same-direction sample.
+        let dir: u8 = if r > prev { 1 } else { 2 };
+        if TREND.load(Relaxed) == dir {
+            TREND.store(0, Relaxed);
+            true
+        } else {
+            TREND.store(dir, Relaxed);
+            false
+        }
+    };
+    if !trend_ok {
+        return Some(shown);
     }
-    // 1-digit move: accept on the second consecutive same-direction sample.
-    let dir: u8 = if r > prev { 1 } else { 2 };
-    if TREND.load(Relaxed) == dir {
-        SHOWN_LEVEL.store(r, Relaxed);
-        TREND.store(0, Relaxed);
-        return Some(r);
+    if delta < 5 {
+        let now = embassy_time::Instant::now().as_millis() as u64;
+        if now - LAST_UPD_MS.load(Relaxed) < BATTERY_DISPLAY_GAP_MS {
+            return Some(shown); // rate-limited: repaint soon, not now
+        }
+        LAST_UPD_MS.store(now, Relaxed);
     }
-    TREND.store(dir, Relaxed);
-    Some(shown)
+    SHOWN_LEVEL.store(r, Relaxed);
+    Some(r)
 }
 
 fn make_snap(ctx: &RenderContext, usb_on: bool, salt: u32) -> UiSnap {
