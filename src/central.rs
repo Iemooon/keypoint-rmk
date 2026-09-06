@@ -399,7 +399,7 @@ async fn main(spawner: Spawner) {
     // processor re-renders on every key event, so throttle past the default
     // 33 ms. (rmk's native OledRenderer targets 128x64 OLEDs and reads too
     // small on this panel.)
-    let mut display = DisplayProcessor::with_renderer(screen, LeftScreen)
+    let mut display = DisplayProcessor::with_renderer(screen, LeftScreen { snap: None })
         .with_min_render_interval(embassy_time::Duration::from_millis(150));
 
     // --- Status LEDs. Half indicator on P0.07 (PWM0); link_state_task feeds

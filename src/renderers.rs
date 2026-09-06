@@ -98,10 +98,10 @@ fn capy_frame(salt: u32) -> usize {
     }
 }
 
-fn draw_capy<D: DrawTarget<Color = BinaryColor>>(d: &mut D, salt: u32) {
+fn draw_capy<D: DrawTarget<Color = BinaryColor>>(d: &mut D, frame: usize) {
     // 70px wide (white edges trimmed by the generator), centred on the
     // 144-line canvas, 1px above exact centre (tuned).
-    blit(d, &crate::capy_art::CAPY_FRAMES[capy_frame(salt)], crate::capy_art::CAPY_W as i32, crate::capy_art::CAPY_H as i32, 9, 1, 1, 11);
+    blit(d, &crate::capy_art::CAPY_FRAMES[frame], crate::capy_art::CAPY_W as i32, crate::capy_art::CAPY_H as i32, 9, 1, 1, 11);
 }
 
 /// Bluetooth rune, 9x14, MSB-first, 2 bytes per row. Same bitmap rmk ships
@@ -137,11 +137,53 @@ const LAYER_Y: i32 = 134; // bottom-flush on the 144-line canvas; the 9x18
 /// Panel on the left half (the split central). Each bin only constructs its
 /// own, hence the allow.
 #[allow(dead_code)]
-pub struct LeftScreen;
+pub struct LeftScreen {
+    pub snap: Option<UiSnap>,
+}
 
 /// Panel on the right half (the split peripheral).
 #[allow(dead_code)]
-pub struct RightScreen;
+pub struct RightScreen {
+    pub snap: Option<UiSnap>,
+}
+
+/// Snapshot of everything `render_ui` reads. The keyboard fires this render
+/// on every key event (throttled), but nothing on screen changes per-keystroke
+/// - so an all-equal snapshot lets render return in microseconds instead of
+/// repainting ~9k pixels, and flush_native's hash then skips the SPI sweep.
+/// Without this, the redraw window + ring-depth-1 backpressure stall the
+/// matrix scan and type lag appears.
+///
+/// `key_press_latch`/`modifiers`/`wpm` are deliberately absent: this UI does
+/// not draw them, so a change there must NOT cost a repaint.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct UiSnap {
+    frame: usize,
+    usb_on: bool,
+    /// BleState discriminant: 0 Inactive, 1 Advertising, 2 Connected.
+    ble_state: u8,
+    profile: u8,
+    level: Option<u8>,
+    layer: u8,
+}
+
+fn make_snap(ctx: &RenderContext, usb_on: bool, salt: u32) -> UiSnap {
+    UiSnap {
+        frame: capy_frame(salt),
+        usb_on,
+        ble_state: match ctx.ble_status.state {
+            BleState::Inactive => 0,
+            BleState::Advertising => 1,
+            BleState::Connected => 2,
+        },
+        profile: ctx.ble_status.profile,
+        level: match ctx.battery.0 {
+            BatteryStatus::Available { level, .. } => level,
+            _ => None,
+        },
+        layer: ctx.layer as u8,
+    }
+}
 
 fn txt<D: DrawTarget<Color = BinaryColor>>(d: &mut D, s: &str, x: i32, y: i32, style: MonoTextStyle<'static, BinaryColor>) {
     Text::new(s, Point::new(x, y), style).draw(d).ok();
@@ -167,10 +209,10 @@ fn render_ui<D: DrawTarget<Color = BinaryColor>>(
     d: &mut D,
     ctx: &RenderContext,
     usb_on: bool,
-    salt: u32,
+    frame: usize,
 ) {
     d.clear(BinaryColor::Off).ok();
-    draw_capy(d, salt); // centre band y20..140; status row & layer name
+    draw_capy(d, frame); // centre band y20..140; status row & layer name
                         // overdraw it afterwards
 
     // --- top-left: mode badge ---
@@ -246,8 +288,14 @@ impl DisplayRenderer<BinaryColor> for LeftScreen {
         d: &mut D,
     ) {
         let usb_on = crate::usb_diag::usb_connected();
-        // ZMK's left/right salts (right = the _DG variant's).
-        render_ui(d, ctx, usb_on, 0x85eb_ca6b);
+        let snap = make_snap(ctx, usb_on, 0x85eb_ca6b);
+        if self.snap == Some(snap) {
+            return; // nothing the UI draws has changed
+        }
+        self.snap = Some(snap);
+        // ZMK's left/right salts (right = the _DG variant's) live in make_snap;
+        // the UI body needs only the resolved frame index.
+        render_ui(d, ctx, usb_on, snap.frame);
     }
 }
 
@@ -259,6 +307,12 @@ impl DisplayRenderer<BinaryColor> for RightScreen {
     ) {
         // Wired badge comes from the central's mirrored ConnectionStatus,
         // tracked by our usb_diag task (see peripheral.rs).
-        render_ui(d, ctx, crate::usb_diag::usb_connected(), 0x9e37_79b9);
+        let usb_on = crate::usb_diag::usb_connected();
+        let snap = make_snap(ctx, usb_on, 0x9e37_79b9);
+        if self.snap == Some(snap) {
+            return; // nothing the UI draws has changed
+        }
+        self.snap = Some(snap);
+        render_ui(d, ctx, usb_on, snap.frame);
     }
 }

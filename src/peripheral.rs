@@ -226,7 +226,7 @@ async fn main(spawner: Spawner) {
     // Layer / WPM / LED state reaches this panel because rmk forwards it over
     // the split link (SplitMessage::Layer / Wpm / Modifier) - requires the
     // `display` feature on BOTH halves (Cargo.toml guarantees it).
-    let mut display = DisplayProcessor::with_renderer(screen, RightScreen)
+    let mut display = DisplayProcessor::with_renderer(screen, RightScreen { snap: None })
         .with_min_render_interval(embassy_time::Duration::from_millis(150));
 
     // --- Right status LED on P0.06 (ZMK's custom_led pin). Meaning: blink

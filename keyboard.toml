@@ -27,12 +27,18 @@ auto_mouse_layer_max_num = 3
 
 # Key events: matrix keyloop, split relay, vial, wpm/scroll/speed
 # processors, DisplayProcessor, BLE wake - needs the most headroom.
+# channel_size: per-channel ring depth (rmk default 1!). With depth 1 the
+# publisher blocks the moment any subscriber is mid-task - the matrix scan
+# and the central-side split relay both freeze behind a slow consumer,
+# which is felt as laggy typing. Buffering a few events costs ~100 B static.
 [event.keyboard]
+channel_size = 8
 subs = 8
 pubs = 5
 
 # Pointing: pad_processor, tp_processor, auto_mouse, split relay, BLE wake.
 [event.pointing]
+channel_size = 4
 subs = 4
 pubs = 4
 
