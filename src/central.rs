@@ -211,6 +211,14 @@ async fn main(spawner: Spawner) {
     let mut keymap_data = KeymapData::new_with_encoder(keymap::get_default_keymap(), keymap::get_default_encoder_map());
     let mut behavior_config = BehaviorConfig::default();
     behavior_config.morse.enable_flow_tap = true;
+    // Flow-tap window (rmk default 120 ms): a morse key pressed within this
+    // idle gap after the previous key resolves as TAP instantly. Measured on
+    // hardware that 120 ms is wide enough to capture whole fast layer
+    // gestures (letter -> Space -> layer key in one burst) and veto the
+    // layer entirely - that was the "fast LT press still prints base
+    // letters" complaint. 40 ms still catches same-beat typing rolls but
+    // leaves any deliberate layer gesture untouched.
+    behavior_config.morse.prior_idle_time = embassy_time::Duration::from_millis(40);
     // Tapping term (rmk: morse hold_timeout). 75 ms (rmk default 250, ZMK
     // Keypoint uses 99 for &lt/&mt). MorseProfile is a packed bitfield, hence
     // the builder. Caveat: Vial's Tapping Term writes only reach memory (no
