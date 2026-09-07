@@ -4,7 +4,6 @@
 #[macro_use]
 mod macros;
 mod lpm009m360a;
-mod motion_pin;
 /// Only so the shared renderers.rs compiles: these values are written and
 /// read on the central, this copy stays at its boot default.
 #[allow(dead_code)]
@@ -54,7 +53,6 @@ use embassy_nrf::spim::{self, Spim};
 use embassy_nrf::twim::{self, Twim};
 use rmk::display::DisplayProcessor;
 use lpm009m360a::{Lpm009m360a, PanelRot};
-use motion_pin::PollWait;
 use renderers::RightScreen;
 use trackpoint::TrackPoint;
 
@@ -203,9 +201,10 @@ async fn main(spawner: Spawner) {
     // the window in which the stick can overwrite the packet we're fetching.
     i2c_cfg.frequency = twim::Frequency::K400;
     let tp_i2c = Twim::new(p.TWISPI0, Irqs, p.P0_14, p.P1_08, i2c_cfg, twi_tx);
-    // Polled, not interrupt-driven: see motion_pin.rs for why the GPIOTE budget
-    // is the first thing to run out once the matrix and encoder are up.
-    let tp_motion = PollWait::new(Input::new(p.P0_07, embassy_nrf::gpio::Pull::Up));
+    // Interrupt-driven like the ZMK driver: embassy-nrf 0.11 `Input` waits ride
+    // the port's shared SENSE/PORT event, so no GPIOTE channel is consumed and
+    // the 10 ms I2C hammering disappears when the nub is still.
+    let tp_motion = Input::new(p.P0_07, embassy_nrf::gpio::Pull::Up);
     let mut trackpoint = TrackPoint::new(trackpoint::DEVICE_ID, tp_i2c, tp_motion);
     // No PointingProcessor here on purpose - the central owns cursor/scroll
     // translation, and rmk carries these events across the split link.

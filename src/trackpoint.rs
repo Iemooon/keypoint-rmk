@@ -36,10 +36,15 @@ const WDT_TIMEOUT_MS: u64 = 200;
 const REPORT_PAUSE_MS: u64 = 5;
 
 /// When true, MOTION is ignored and the bridge is read on a fixed timer. When
-/// false, one falling edge on MOTION triggers one read. This board has never
-/// shown a MOTION edge, so polling is the working mode. Polling re-reads
+/// false, one falling edge on MOTION triggers one read. Interrupt mode is the
+/// ZMK-proven wiring (active-low MOTION, edge->active interrupt; the vendor
+/// driver reads the same 7-byte packet per edge). The earlier "no edges were
+/// ever seen" note came from the PollWait stand-in, not from the line itself;
+/// embassy-nrf 0.11 waits through the shared port SENSE/PORT event, so this
+/// costs no GPIOTE channel. If a live board ever misses nub data, flip this
+/// back to true and nothing else in the driver changes. Polling re-reads
 /// packets the bridge already sent; read_packet filters those out.
-pub const POLL_MODE: bool = true;
+pub const POLL_MODE: bool = false;
 /// Poll period in poll mode. 100 Hz: above what a hand can resolve, below the
 /// rate that floods the split link and the panel.
 const POLL_INTERVAL_MS: u64 = 10;
