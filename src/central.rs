@@ -190,7 +190,7 @@ async fn main(spawner: Spawner) {
         vid: 0x1313,
         pid: 0x1208,
         manufacturer: "ZT",
-        product_name: "Keypoint",
+        product_name: "KeyPoint",
         ..DeviceConfig::default()
     };
     let vial_config = VialConfig::new(VIAL_KEYBOARD_ID, VIAL_KEYBOARD_DEF, &[(0, 0), (1, 1)]);
