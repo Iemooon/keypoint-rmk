@@ -30,8 +30,10 @@ const TP_ADDR: u8 = 0x15;
 const PACKET_LEN: usize = 7;
 /// `TRACKPOINT_MAGIC_BYTE0` - byte 0 of every valid packet.
 const MAGIC: u8 = 0x50;
-/// `TRACKPOINT_WDT_TIMEOUT`: ignore a stroke that resumes after this silence.
-const WDT_TIMEOUT_MS: u64 = 200;
+/// Safety-net tick in interrupt mode: a slow poll that keeps the nub alive if
+/// this board's MOTION line ever stops toggling. Two harmless wake-ups per
+/// second when edges are healthy.
+const FALLBACK_POLL_MS: u64 = 500;
 /// ZMK's trailing `k_msleep(5)`.
 const REPORT_PAUSE_MS: u64 = 5;
 
@@ -83,8 +85,6 @@ where
     motion: MOTION,
     /// `last_packet_time` - the acceleration term divides by the gap to it.
     last_packet: Instant,
-    /// `last_activity_time` - feeds the 200 ms soft watchdog.
-    last_activity: Instant,
 }
 
 impl<I2C, MOTION> TrackPoint<I2C, MOTION>
@@ -98,7 +98,6 @@ where
             i2c,
             motion,
             last_packet: Instant::now(),
-            last_activity: Instant::now(),
         }
     }
 
@@ -188,23 +187,23 @@ where
                 Timer::after_millis(POLL_INTERVAL_MS).await;
                 TP.n_irq.fetch_add(1, Ordering::Relaxed);
             } else {
-                if self.motion.wait_for_falling_edge().await.is_err() {
-                    Timer::after_millis(5).await;
-                    continue;
-                }
+                // A falling edge carries one packet; the tick is a safety net
+                // (see FALLBACK_POLL_MS). The former 200 ms "soft watchdog"
+                // lived here and caused the outage it now guards against in
+                // memory: it compared the edge stamp against `last_activity`,
+                // a field refreshed only by *successful reads*, so every first
+                // edge after a pause was discarded - forever. ZMK's original
+                // stamps in the ISR before the check, which never self-locks;
+                // with one read per wake there is nothing to guard here.
+                let _ = embassy_futures::select::select(
+                    self.motion.wait_for_falling_edge(),
+                    Timer::after_millis(FALLBACK_POLL_MS),
+                )
+                .await;
                 TP.n_irq.fetch_add(1, Ordering::Relaxed);
             }
 
             let now = Instant::now();
-            // The 200 ms soft watchdog applies only in interrupt mode. Polling has
-            // no MOTION edge to refresh last_activity, so keeping the check would
-            // reject every tick after the first 200 ms and stop reading.
-            if !POLL_MODE
-                && now.saturating_duration_since(self.last_activity).as_millis()
-                    > WDT_TIMEOUT_MS
-            {
-                continue;
-            }
 
             let Some((dx, dy)) = self.read_packet().await else {
                 // Covers both the I2C failure and the magic mismatch; ZMK logs
@@ -218,7 +217,6 @@ where
             let fx = dx as f32 * BASE_SPEED * factor * mult;
             let fy = dy as f32 * BASE_SPEED * factor * mult;
             self.last_packet = now;
-            self.last_activity = now;
 
             // ZMK reports -(int)fx / -(int)fy, i.e. truncation toward zero, then
             // HID clamps to i8. We clamp here so a hard shove cannot wrap.
