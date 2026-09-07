@@ -16,7 +16,7 @@ license = "MIT OR Apache-2.0"
 # "use_1m_phy": the host's BT adapter shows 2M-PHY link flapping (b -> x -> b
 # re-advertising spells); 1M is slower over the air but far more tolerant.
 # Keep it until the adapter or its driver changes.
-rmk = { git = "https://github.com/rmk-rs/rmk.git", rev = "d0502f17", default-features = false, features = ["defmt", "storage", "vial", "watchdog", "nrf52840_ble", "split", "async_matrix", "adafruit_bl", "display", "subrating", "use_1m_phy"] }
+rmk = { git = "https://github.com/rmk-rs/rmk.git", rev = "d0502f17", default-features = false, features = ["defmt", "storage", "vial", "watchdog", "nrf52840_ble", "split", "async_matrix", "adafruit_bl", "display", "use_1m_phy"] }
 # (No direct rmk-types dependency: rmk re-exports the whole crate as `rmk::types`.)
 
 # The trackpad and the nub are their own `#[input_device]` structs; these are the
