@@ -24,11 +24,14 @@
 # layer just never changes. 3 (not 2) leaves room for a third entry.
 [rmk]
 auto_mouse_layer_max_num = 3
-# Idle sleep manager. DISABLED (0) by deliberate choice on 2026-09-07: with
-# 60s it put the split link into slow-heartbeat sleep and both halves then
-# suffered dropouts, reconnect lag and Vial timeouts; stability wins over
-# standby drain. Re-test only paired with a subrating-free slow-param path.
-split_central_sleep_timeout_seconds = 0
+# Idle sleep manager. The 60s trial with the subrating feature dropped the
+# split link into slow heartbeats that caused dropouts; re-enabled at a
+# conservative 300s WITHOUT subrating, so sleep falls back to the classic
+# slow-connection-parameter path (rmk sleep_split_conn_params), which the
+# trouble stack has always used. Effect: after 5 min of no key/pointing
+# activity, SleepStateEvent slows TP/pad polls and battery reporting to a
+# 2 s heartbeat; any key resumes. Typing sessions never idle that long.
+split_central_sleep_timeout_seconds = 300
 
 # Key events: matrix keyloop, split relay, vial, wpm/scroll/speed
 # processors, DisplayProcessor, BLE wake - needs the most headroom.
