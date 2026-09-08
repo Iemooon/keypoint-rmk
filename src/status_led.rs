@@ -113,10 +113,20 @@ pub async fn central_link_task() -> ! {
 
 /// The half-mounted indicator: blinks as long as there is no link to the
 /// host, whatever the reason (advertising, radio idle); dark while linked.
+/// While the keyboard sleeps the lamp is dark regardless of link state -
+/// nobody is looking at an unattended keyboard, and the old 1 Hz blink ran
+/// through the night unthrottled (it is not covered by the sleep manager's
+/// poll slowdown). The 500 ms re-check keeps wake-up snappy without the
+/// 50 ms tick cost.
 #[embassy_executor::task]
 pub async fn custom_led_task(mut led: StatusLed<'static>) -> ! {
     let mut tick: u8 = 0;
     loop {
+        if crate::sleep_watch::sleeping() {
+            led.set_level(0);
+            embassy_time::Timer::after_millis(500).await;
+            continue;
+        }
         if link_state() == ST_CONN {
             led.set_level(0);
         } else if tick % SLOW_CYCLE_TICKS < SLOW_ON_TICKS {
