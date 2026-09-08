@@ -291,11 +291,14 @@ async fn main(spawner: Spawner) {
     let host_service = HostService::new(&keymap, &rmk_config);
 
     // Initialize the encoder processor
+    // Battery sampling every 10 min: the display only ever needs single-digit
+    // percent resolution per sitting, and 12 s one-shot reads multiplied the
+    // visible noise (each read can differ by a few mV = ~1 tick).
     let mut adc_device = NrfAdc::new(
         saadc,
         [AnalogEventType::Battery],
         [0],
-        embassy_time::Duration::from_secs(12),
+        embassy_time::Duration::from_secs(600),
         None,
     );
     // Full-charge point calibrated to 4.15 V: the aged cell never reaches

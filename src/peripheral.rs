@@ -178,12 +178,12 @@ async fn main(spawner: Spawner) {
     let mut encoder = RotaryEncoder::with_resolution(pin_a, pin_b, 4, true, 1);
 
     // Battery monitoring for peripheral
-    // 1. Initialize ADC device:
+    // 1. Initialize ADC device: sampling every 10 min (see central for why)
     let mut adc_device = NrfAdc::new(
         saadc,
         [AnalogEventType::Battery],
         [0],
-        embassy_time::Duration::from_secs(12),
+        embassy_time::Duration::from_secs(600),
         None,
     );
     // Full-charge point calibrated to 4.15 V (matches central; see there).
