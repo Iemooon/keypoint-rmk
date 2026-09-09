@@ -24,6 +24,11 @@
 # layer just never changes. 3 (not 2) leaves room for a third entry.
 [rmk]
 auto_mouse_layer_max_num = 3
+# Key debounce window: rmk's default is 20 ms (a press must survive that long
+# before it is reported) - measured as the extra lag vs ZMK (1/3 ms there,
+# years of clean operation on this very board), visible only at extreme
+# typing speed. 2 ms keeps mechanical-chatter protection with 90% less lag.
+debounce_time = 2
 # Idle sleep manager. The 60s trial with the subrating feature dropped the
 # split link into slow heartbeats that caused dropouts; re-enabled at a
 # conservative 300s WITHOUT subrating, so sleep falls back to the classic
